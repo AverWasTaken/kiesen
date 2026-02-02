@@ -1,93 +1,149 @@
 import { Message, AttachmentBuilder } from "discord.js";
 import { logger } from "./logger.js";
-import { Readable } from "stream";
 import { Buffer } from "buffer";
 
 // Supported platforms regex patterns
-const VIDEO_PATTERNS = [
-  // TikTok
-  /https?:\/\/(www\.|vm\.|m\.)?tiktok\.com\/@?[\w.-]+\/video\/\d+/i,
-  /https?:\/\/(www\.|vm\.|m\.)?tiktok\.com\/[\w]+/i,
-  // Instagram
-  /https?:\/\/(www\.)?instagram\.com\/(p|reel|reels|tv)\/[\w-]+/i,
-  // Twitter/X
-  /https?:\/\/(www\.)?(twitter|x)\.com\/\w+\/status\/\d+/i,
-  // YouTube Shorts (bonus)
-  /https?:\/\/(www\.|m\.)?youtube\.com\/shorts\/[\w-]+/i,
-];
+const VIDEO_PATTERNS = {
+  tiktok: [
+    /https?:\/\/(www\.|vm\.|m\.)?tiktok\.com\/@?[\w.-]+\/video\/\d+/i,
+    /https?:\/\/(www\.|vm\.|m\.)?tiktok\.com\/[\w]+/i,
+  ],
+  instagram: [/https?:\/\/(www\.)?instagram\.com\/(p|reel|reels|tv)\/[\w-]+/i],
+  twitter: [/https?:\/\/(www\.)?(twitter|x)\.com\/\w+\/status\/\d+/i],
+  youtube: [/https?:\/\/(www\.|m\.)?youtube\.com\/shorts\/[\w-]+/i],
+};
 
 const DISCORD_FILE_LIMIT = 25 * 1024 * 1024; // 25MB for regular servers
-const COBALT_API_URL = "https://api.cobalt.tools/api/json";
 
-interface CobaltResponse {
-  status: "stream" | "redirect" | "picker" | "error";
-  url?: string;
-  picker?: Array<{ url: string; type: string }>;
-  text?: string;
+interface TikWMResponse {
+  code: number;
+  msg: string;
+  data?: {
+    play: string;
+    hdplay?: string;
+    title?: string;
+  };
 }
 
 /**
- * Check if a message contains a supported video link
+ * Check if a message contains a supported video link and return platform + url
  */
-export function findVideoUrl(content: string): string | null {
-  for (const pattern of VIDEO_PATTERNS) {
-    const match = content.match(pattern);
-    if (match) {
-      return match[0];
+export function findVideoUrl(content: string): { platform: string; url: string } | null {
+  for (const [platform, patterns] of Object.entries(VIDEO_PATTERNS)) {
+    for (const pattern of patterns) {
+      const match = content.match(pattern);
+      if (match) {
+        return { platform, url: match[0] };
+      }
     }
   }
   return null;
 }
 
 /**
- * Extract video URL using Cobalt API
+ * Extract video URL for TikTok using TikWM API
  */
-async function extractVideoUrl(url: string): Promise<string | null> {
+async function extractTikTokVideo(url: string): Promise<string | null> {
   try {
-    const response = await fetch(COBALT_API_URL, {
-      method: "POST",
+    const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`;
+    const response = await fetch(apiUrl, {
       headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       },
-      body: JSON.stringify({
-        url: url,
-        vCodec: "h264",
-        vQuality: "720",
-        aFormat: "mp3",
-        filenamePattern: "basic",
-        isAudioOnly: false,
-        isNoTTWatermark: true,
-        isTTFullAudio: false,
-        disableMetadata: false,
-      }),
     });
 
     if (!response.ok) {
-      logger.warn(`Cobalt API error: ${response.status} ${response.statusText}`);
+      logger.warn(`TikWM API error: ${response.status}`);
       return null;
     }
 
-    const data = (await response.json()) as CobaltResponse;
+    const data = (await response.json()) as TikWMResponse;
 
-    if (data.status === "stream" || data.status === "redirect") {
-      return data.url ?? null;
+    if (data.code === 0 && data.data) {
+      // Prefer HD play if available
+      return data.data.hdplay || data.data.play || null;
     }
 
-    if (data.status === "picker" && data.picker && data.picker.length > 0) {
-      // For picker results (multiple videos), get the first video
-      const videoItem = data.picker.find((item) => item.type === "video") || data.picker[0];
-      return videoItem?.url ?? null;
-    }
-
-    if (data.status === "error") {
-      logger.warn(`Cobalt API returned error: ${data.text}`);
-    }
-
+    logger.warn(`TikWM API returned error: ${data.msg}`);
     return null;
   } catch (error) {
-    logger.error("Failed to extract video URL:", error);
+    logger.error("Failed to extract TikTok video:", error);
     return null;
+  }
+}
+
+interface FxTwitterResponse {
+  tweet?: {
+    media?: {
+      videos?: Array<{ url: string }>;
+    };
+    video?: {
+      url: string;
+    };
+  };
+}
+
+/**
+ * Extract video URL for Twitter/X using fxtwitter
+ */
+async function extractTwitterVideo(url: string): Promise<string | null> {
+  try {
+    // Convert twitter.com or x.com to api.fxtwitter.com
+    const fxUrl = url
+      .replace("twitter.com", "api.fxtwitter.com")
+      .replace("x.com", "api.fxtwitter.com");
+
+    const response = await fetch(fxUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+    });
+
+    if (!response.ok) {
+      logger.warn(`FxTwitter API error: ${response.status}`);
+      return null;
+    }
+
+    const data = (await response.json()) as FxTwitterResponse;
+
+    if (data.tweet?.media?.videos?.[0]?.url) {
+      return data.tweet.media.videos[0].url;
+    }
+
+    // Try alternate structure
+    if (data.tweet?.video?.url) {
+      return data.tweet.video.url;
+    }
+
+    logger.warn("No video found in Twitter response");
+    return null;
+  } catch (error) {
+    logger.error("Failed to extract Twitter video:", error);
+    return null;
+  }
+}
+
+/**
+ * Extract video URL based on platform
+ */
+async function extractVideoUrl(platform: string, url: string): Promise<string | null> {
+  switch (platform) {
+    case "tiktok":
+      return extractTikTokVideo(url);
+    case "twitter":
+      return extractTwitterVideo(url);
+    case "instagram":
+      // Instagram is tricky without auth - for now just log that it's not supported
+      logger.info("Instagram video extraction not yet implemented");
+      return null;
+    case "youtube":
+      // YouTube shorts would need yt-dlp or similar
+      logger.info("YouTube Shorts extraction not yet implemented");
+      return null;
+    default:
+      return null;
   }
 }
 
@@ -102,6 +158,7 @@ async function downloadVideo(
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Referer: "https://www.tiktok.com/",
       },
     });
 
@@ -146,14 +203,16 @@ function getExtension(contentType: string): string {
 }
 
 /**
- * Get platform name from URL for display
+ * Get display name for platform
  */
-function getPlatformName(url: string): string {
-  if (url.includes("tiktok.com")) return "TikTok";
-  if (url.includes("instagram.com")) return "Instagram";
-  if (url.includes("twitter.com") || url.includes("x.com")) return "Twitter/X";
-  if (url.includes("youtube.com")) return "YouTube";
-  return "Video";
+function getPlatformDisplayName(platform: string): string {
+  const names: Record<string, string> = {
+    tiktok: "TikTok",
+    instagram: "Instagram",
+    twitter: "Twitter/X",
+    youtube: "YouTube",
+  };
+  return names[platform] || "Video";
 }
 
 /**
@@ -161,11 +220,13 @@ function getPlatformName(url: string): string {
  * Returns true if a video was processed, false otherwise
  */
 export async function handleVideoEmbed(message: Message): Promise<boolean> {
-  const videoUrl = findVideoUrl(message.content);
-  if (!videoUrl) return false;
+  const result = findVideoUrl(message.content);
+  if (!result) return false;
 
-  const platform = getPlatformName(videoUrl);
-  logger.info(`Detected ${platform} video link from ${message.author.tag}: ${videoUrl}`);
+  const { platform, url } = result;
+  const displayName = getPlatformDisplayName(platform);
+
+  logger.info(`Detected ${displayName} video link from ${message.author.tag}: ${url}`);
 
   // Add a reaction to show we're processing
   try {
@@ -176,7 +237,7 @@ export async function handleVideoEmbed(message: Message): Promise<boolean> {
 
   try {
     // Extract the direct video URL
-    const directUrl = await extractVideoUrl(videoUrl);
+    const directUrl = await extractVideoUrl(platform, url);
     if (!directUrl) {
       await removeReaction(message, "⏳");
       return false;
@@ -189,7 +250,7 @@ export async function handleVideoEmbed(message: Message): Promise<boolean> {
       // Video too large - let the user know
       try {
         await message.reply({
-          content: `⚠️ Video is too large to embed (>25MB). [Open in ${platform}](${videoUrl})`,
+          content: `⚠️ Video is too large to embed (>25MB). [Open in ${displayName}](${url})`,
           allowedMentions: { repliedUser: false },
         });
       } catch {
@@ -201,7 +262,7 @@ export async function handleVideoEmbed(message: Message): Promise<boolean> {
     // Create attachment and send
     const extension = getExtension(videoData.contentType);
     const attachment = new AttachmentBuilder(videoData.buffer, {
-      name: `${platform.toLowerCase()}_video.${extension}`,
+      name: `${platform}_video.${extension}`,
     });
 
     await message.reply({
@@ -209,7 +270,7 @@ export async function handleVideoEmbed(message: Message): Promise<boolean> {
       allowedMentions: { repliedUser: false },
     });
 
-    // Remove processing reaction and add success
+    // Remove processing reaction
     await removeReaction(message, "⏳");
 
     // Suppress the original embed
@@ -220,7 +281,7 @@ export async function handleVideoEmbed(message: Message): Promise<boolean> {
     }
 
     logger.info(
-      `Successfully embedded ${platform} video (${(videoData.size / 1024 / 1024).toFixed(2)}MB)`
+      `Successfully embedded ${displayName} video (${(videoData.size / 1024 / 1024).toFixed(2)}MB)`
     );
     return true;
   } catch (error) {
