@@ -1,6 +1,7 @@
 import { Events, Message, PermissionsBitField } from "discord.js";
 import type { Event } from "../utils/eventLoader.js";
 import { logger } from "../utils/logger.js";
+import { handleVideoEmbed } from "../utils/videoEmbed.js";
 
 const event: Event<typeof Events.MessageCreate> = {
   name: Events.MessageCreate,
@@ -8,6 +9,12 @@ const event: Event<typeof Events.MessageCreate> = {
     // Ignore bots and DMs
     if (message.author.bot) return;
     if (!message.guild) return;
+
+    // Handle video embeds (TikTok, Instagram, Twitter/X)
+    // Run this in background so it doesn't block commands
+    handleVideoEmbed(message).catch((error) => {
+      logger.error("Video embed error:", error);
+    });
 
     const prefix = message.client.config.prefix;
 
