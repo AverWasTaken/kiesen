@@ -1,0 +1,37 @@
+{
+  "name": "discord-bot-template",
+  "version": "1.0.0",
+  "description": "A TypeScript Discord bot template with Convex integration",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "convex:dev": "convex dev",
+    "convex:deploy": "convex deploy",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "typescript",
+    "convex"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "convex": "^1.17.4",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
