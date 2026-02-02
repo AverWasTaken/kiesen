@@ -18,7 +18,7 @@ export async function loadEvents(client: Client): Promise<number> {
 
   try {
     const eventFiles = readdirSync(eventsPath).filter(
-      (file) => file.endsWith(".ts") || file.endsWith(".js")
+      (file) => (file.endsWith(".ts") || file.endsWith(".js")) && !file.endsWith(".d.ts")
     );
 
     for (const file of eventFiles) {

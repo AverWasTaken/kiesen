@@ -1,18 +1,19 @@
 import { readdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import type {
-  SlashCommandBuilder,
-  SlashCommandSubcommandsOnlyBuilder,
-  ChatInputCommandInteraction,
-} from "discord.js";
+import type { Message, PermissionResolvable } from "discord.js";
 import { logger } from "./logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export interface Command {
-  data: SlashCommandBuilder | SlashCommandSubcommandsOnlyBuilder | Omit<SlashCommandBuilder, "addSubcommand" | "addSubcommandGroup">;
-  execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
+  name: string;
+  description: string;
+  aliases?: string[];
+  usage?: string;
+  permissions?: PermissionResolvable[];
+  ownerOnly?: boolean;
+  execute: (message: Message, args: string[]) => Promise<void>;
 }
 
 export async function loadCommands(): Promise<Command[]> {
@@ -21,16 +22,16 @@ export async function loadCommands(): Promise<Command[]> {
 
   try {
     const commandFiles = readdirSync(commandsPath).filter(
-      (file) => file.endsWith(".ts") || file.endsWith(".js")
+      (file) => (file.endsWith(".ts") || file.endsWith(".js")) && !file.endsWith(".d.ts")
     );
 
     for (const file of commandFiles) {
       const filePath = join(commandsPath, file);
       const command = (await import(filePath)) as { default: Command };
 
-      if (command.default?.data && command.default?.execute) {
+      if (command.default?.name && typeof command.default?.execute === 'function') {
         commands.push(command.default);
-        logger.debug(`Loaded command: ${command.default.data.name}`);
+        logger.debug(`Loaded command: ${command.default.name}`);
       } else {
         logger.warn(`Command file ${file} is missing required exports`);
       }

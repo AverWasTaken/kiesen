@@ -1,20 +1,24 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, Collection, REST, Routes } from "discord.js";
+import { Client, GatewayIntentBits, Collection } from "discord.js";
 import { ConvexHttpClient } from "convex/browser";
 import { loadCommands, type Command } from "./utils/commandLoader.js";
 import { loadEvents } from "./utils/eventLoader.js";
 import { logger } from "./utils/logger.js";
 
-// Extend Discord.js Client type to include commands
+// Extend Discord.js Client type to include commands and config
 declare module "discord.js" {
   interface Client {
     commands: Collection<string, Command>;
     convex: ConvexHttpClient;
+    config: {
+      prefix: string;
+      ownerId: string;
+    };
   }
 }
 
 // Validate required environment variables
-const requiredEnvVars = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID"] as const;
+const requiredEnvVars = ["DISCORD_TOKEN"] as const;
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
     logger.error(`Missing required environment variable: ${envVar}`);
@@ -33,6 +37,12 @@ const client = new Client({
   ],
 });
 
+// Bot configuration
+client.config = {
+  prefix: process.env.PREFIX || "!",
+  ownerId: process.env.OWNER_ID || "",
+};
+
 // Initialize collections and services
 client.commands = new Collection();
 
@@ -50,7 +60,13 @@ async function init(): Promise<void> {
     // Load commands
     const commands = await loadCommands();
     for (const command of commands) {
-      client.commands.set(command.data.name, command);
+      client.commands.set(command.name, command);
+      // Also register aliases
+      if (command.aliases) {
+        for (const alias of command.aliases) {
+          client.commands.set(alias, command);
+        }
+      }
     }
     logger.info(`Loaded ${commands.length} commands`);
 
@@ -58,45 +74,16 @@ async function init(): Promise<void> {
     const eventCount = await loadEvents(client);
     logger.info(`Loaded ${eventCount} events`);
 
-    // Register slash commands with Discord
-    await registerCommands(commands);
-
     // Login to Discord
     await client.login(process.env.DISCORD_TOKEN);
   } catch (error) {
-    logger.error("Failed to initialize bot:", error);
-    process.exit(1);
-  }
-}
-
-// Register slash commands with Discord API
-async function registerCommands(commands: Command[]): Promise<void> {
-  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN!);
-  const commandData = commands.map((cmd) => cmd.data.toJSON());
-
-  try {
-    logger.info("Registering slash commands...");
-
-    if (process.env.DISCORD_GUILD_ID) {
-      // Register to specific guild (faster for development)
-      await rest.put(
-        Routes.applicationGuildCommands(
-          process.env.DISCORD_CLIENT_ID!,
-          process.env.DISCORD_GUILD_ID
-        ),
-        { body: commandData }
-      );
-      logger.info(`Registered ${commandData.length} commands to guild`);
+    if (error instanceof Error) {
+      logger.error("Failed to initialize bot:", error.message);
+      console.error(error.stack);
     } else {
-      // Register globally (takes up to 1 hour to propagate)
-      await rest.put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID!), {
-        body: commandData,
-      });
-      logger.info(`Registered ${commandData.length} commands globally`);
+      logger.error("Failed to initialize bot:", String(error));
     }
-  } catch (error) {
-    logger.error("Failed to register commands:", error);
-    throw error;
+    process.exit(1);
   }
 }
 

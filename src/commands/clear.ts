@@ -1,50 +1,40 @@
-import {
-  SlashCommandBuilder,
-  ChatInputCommandInteraction,
-  PermissionFlagsBits,
-  TextChannel,
-} from "discord.js";
+import { Message, PermissionFlagsBits, TextChannel } from "discord.js";
 import type { Command } from "../utils/commandLoader.js";
+import { api } from "../../convex/_generated/api.js";
 
 const command: Command = {
-  data: new SlashCommandBuilder()
-    .setName("clear")
-    .setDescription("Delete multiple messages from a channel")
-    .addIntegerOption((option) =>
-      option
-        .setName("amount")
-        .setDescription("Number of messages to delete (1-100)")
-        .setMinValue(1)
-        .setMaxValue(100)
-        .setRequired(true)
-    )
-    .addUserOption((option) =>
-      option
-        .setName("user")
-        .setDescription("Only delete messages from this user")
-        .setRequired(false)
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
+  name: "clear",
+  description: "Delete multiple messages from a channel",
+  usage: "clear <amount> [@user]",
+  aliases: ["purge", "prune"],
+  permissions: [PermissionFlagsBits.ManageMessages],
 
-  async execute(interaction: ChatInputCommandInteraction) {
-    if (!interaction.guild) {
-      await interaction.reply({ content: "This command can only be used in a server.", ephemeral: true });
+  async execute(message: Message, args: string[]) {
+    if (!message.guild) {
+      await message.reply("❌ This command can only be used in a server.");
       return;
     }
 
-    const channel = interaction.channel as TextChannel;
+    const channel = message.channel as TextChannel;
     if (!channel.isTextBased() || channel.isDMBased()) {
-      await interaction.reply({ content: "This command cannot be used in this channel.", ephemeral: true });
+      await message.reply("❌ This command cannot be used in this channel.");
       return;
     }
 
-    const amount = interaction.options.getInteger("amount", true);
-    const targetUser = interaction.options.getUser("user");
+    // Get amount
+    const amount = parseInt(args[0]!);
+    if (isNaN(amount) || amount < 1 || amount > 100) {
+      await message.reply("❌ Please provide a valid number between 1 and 100. Usage: `!clear <amount> [@user]`");
+      return;
+    }
 
-    await interaction.deferReply({ ephemeral: true });
+    // Get optional target user
+    const targetId = args[1]?.replace(/[<@!>]/g, "");
+    const targetUser = targetId ? await message.client.users.fetch(targetId).catch(() => null) : null;
 
     try {
-      let messages = await channel.messages.fetch({ limit: amount });
+      // Fetch messages (+1 to include the command message itself)
+      let messages = await channel.messages.fetch({ limit: amount + 1 });
 
       // Filter by user if specified
       if (targetUser) {
@@ -56,19 +46,44 @@ const command: Command = {
       messages = messages.filter((msg) => msg.createdTimestamp > twoWeeksAgo);
 
       if (messages.size === 0) {
-        await interaction.editReply("No messages found to delete.");
+        await message.reply("❌ No messages found to delete.");
         return;
       }
 
       const deleted = await channel.bulkDelete(messages, true);
+      const deletedCount = deleted.size - 1; // Exclude the command message
 
+      // Log to Convex
+      let caseNumber: number | null = null;
+      if (message.client.convex) {
+        try {
+          const result = await message.client.convex.mutation(api.modlogs.log, {
+            guildId: message.guild.id,
+            targetId: targetUser?.id || "channel",
+            targetUsername: targetUser?.tag || `#${channel.name}`,
+            moderatorId: message.author.id,
+            moderatorUsername: message.author.tag,
+            action: "clear",
+            reason: targetUser ? `Cleared ${deletedCount} messages from user` : `Cleared ${deletedCount} messages`,
+            messageCount: deletedCount,
+          });
+          caseNumber = result.caseNumber;
+        } catch (err) {
+          console.error("Failed to log clear to Convex:", err);
+        }
+      }
+
+      const caseText = caseNumber ? ` | Case #${caseNumber}` : "";
       const response = targetUser
-        ? `🗑️ Deleted **${deleted.size}** message(s) from ${targetUser.tag}.`
-        : `🗑️ Deleted **${deleted.size}** message(s).`;
+        ? `🗑️ Deleted **${deletedCount}** message(s) from ${targetUser.tag}.${caseText}`
+        : `🗑️ Deleted **${deletedCount}** message(s).${caseText}`;
 
-      await interaction.editReply(response);
+      const reply = await (message.channel as TextChannel).send(response);
+      
+      // Delete the confirmation after 3 seconds
+      setTimeout(() => reply.delete().catch(() => {}), 3000);
     } catch {
-      await interaction.editReply("Failed to delete messages. Messages older than 14 days cannot be bulk deleted.");
+      await message.reply("❌ Failed to delete messages. Messages older than 14 days cannot be bulk deleted.");
     }
   },
 };

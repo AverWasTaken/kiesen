@@ -1,56 +1,74 @@
-import {
-  SlashCommandBuilder,
-  ChatInputCommandInteraction,
-  PermissionFlagsBits,
-  GuildMember,
-} from "discord.js";
+import { Message, PermissionFlagsBits } from "discord.js";
 import type { Command } from "../utils/commandLoader.js";
 import { canModerate } from "../utils/permissions.js";
+import { api } from "../../convex/_generated/api.js";
 
 const command: Command = {
-  data: new SlashCommandBuilder()
-    .setName("kick")
-    .setDescription("Kick a member from the server")
-    .addUserOption((option) =>
-      option.setName("user").setDescription("The user to kick").setRequired(true)
-    )
-    .addStringOption((option) =>
-      option.setName("reason").setDescription("Reason for the kick").setRequired(false)
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers),
+  name: "kick",
+  description: "Kick a member from the server",
+  usage: "kick <@user> [reason]",
+  aliases: ["k"],
+  permissions: [PermissionFlagsBits.KickMembers],
 
-  async execute(interaction: ChatInputCommandInteraction) {
-    if (!interaction.guild) {
-      await interaction.reply({ content: "This command can only be used in a server.", ephemeral: true });
+  async execute(message: Message, args: string[]) {
+    if (!message.guild) {
+      await message.reply("❌ This command can only be used in a server.");
       return;
     }
 
-    const target = interaction.options.getMember("user") as GuildMember | null;
-    const reason = interaction.options.getString("reason") ?? "No reason provided";
+    // Get target from mention or ID
+    const targetId = args[0]?.replace(/[<@!>]/g, "");
+    if (!targetId) {
+      await message.reply("❌ Please mention a user to kick. Usage: `!kick @user [reason]`");
+      return;
+    }
 
+    const target = await message.guild.members.fetch(targetId).catch(() => null);
     if (!target) {
-      await interaction.reply({ content: "Could not find that user.", ephemeral: true });
+      await message.reply("❌ Could not find that user.");
       return;
     }
 
-    const check = canModerate(interaction, target);
+    // Get reason (everything after the mention)
+    const reason = args.slice(1).join(" ") || "No reason provided";
+
+    const check = canModerate(message, target);
     if (!check.success) {
-      await interaction.reply({ content: check.reason!, ephemeral: true });
+      await message.reply(`❌ ${check.reason}`);
       return;
     }
 
     if (!target.kickable) {
-      await interaction.reply({ content: "I cannot kick this user.", ephemeral: true });
+      await message.reply("❌ I cannot kick this user.");
       return;
     }
 
     try {
-      await target.kick(`${reason} (by ${interaction.user.tag})`);
-      await interaction.reply({
-        content: `✅ **${target.user.tag}** has been kicked.\nReason: ${reason}`,
-      });
+      await target.kick(`${reason} (by ${message.author.tag})`);
+
+      // Log to Convex
+      let caseNumber: number | null = null;
+      if (message.client.convex) {
+        try {
+          const result = await message.client.convex.mutation(api.modlogs.log, {
+            guildId: message.guild.id,
+            targetId: target.id,
+            targetUsername: target.user.tag,
+            moderatorId: message.author.id,
+            moderatorUsername: message.author.tag,
+            action: "kick",
+            reason: reason,
+          });
+          caseNumber = result.caseNumber;
+        } catch (err) {
+          console.error("Failed to log kick to Convex:", err);
+        }
+      }
+
+      const caseText = caseNumber ? ` | Case #${caseNumber}` : "";
+      await message.reply(`✅ **${target.user.tag}** has been kicked.${caseText}\nReason: ${reason}`);
     } catch {
-      await interaction.reply({ content: "Failed to kick the user.", ephemeral: true });
+      await message.reply("❌ Failed to kick the user.");
     }
   },
 };

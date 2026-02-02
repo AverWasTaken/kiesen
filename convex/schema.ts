@@ -13,24 +13,30 @@ export default defineSchema({
     .index("by_guild_user", ["guildId", "userId"])
     .index("by_guild", ["guildId"]),
 
-  // Store moderation logs
+  // Store moderation logs with case numbers
   modlogs: defineTable({
     guildId: v.string(),
+    caseNumber: v.number(), // Auto-incrementing per guild
     targetId: v.string(),
+    targetUsername: v.string(),
     moderatorId: v.string(),
+    moderatorUsername: v.string(),
     action: v.union(
       v.literal("kick"),
       v.literal("ban"),
       v.literal("unban"),
       v.literal("mute"),
       v.literal("unmute"),
-      v.literal("warn")
+      v.literal("warn"),
+      v.literal("clear")
     ),
     reason: v.optional(v.string()),
-    duration: v.optional(v.number()),
+    duration: v.optional(v.number()), // For mutes (in ms)
+    messageCount: v.optional(v.number()), // For clear actions
     createdAt: v.number(),
   })
     .index("by_guild", ["guildId"])
+    .index("by_guild_case", ["guildId", "caseNumber"])
     .index("by_target", ["guildId", "targetId"]),
 
   // Store guild configurations

@@ -1,68 +1,85 @@
-import {
-  SlashCommandBuilder,
-  ChatInputCommandInteraction,
-  PermissionFlagsBits,
-  GuildMember,
-} from "discord.js";
+import { Message, PermissionFlagsBits, GuildMember } from "discord.js";
 import type { Command } from "../utils/commandLoader.js";
 import { canModerate } from "../utils/permissions.js";
+import { api } from "../../convex/_generated/api.js";
 
 const command: Command = {
-  data: new SlashCommandBuilder()
-    .setName("ban")
-    .setDescription("Ban a member from the server")
-    .addUserOption((option) =>
-      option.setName("user").setDescription("The user to ban").setRequired(true)
-    )
-    .addStringOption((option) =>
-      option.setName("reason").setDescription("Reason for the ban").setRequired(false)
-    )
-    .addIntegerOption((option) =>
-      option
-        .setName("delete_days")
-        .setDescription("Days of messages to delete (0-7)")
-        .setMinValue(0)
-        .setMaxValue(7)
-        .setRequired(false)
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers),
+  name: "ban",
+  description: "Ban a member from the server",
+  usage: "ban <@user> [reason] [--delete <days>]",
+  aliases: ["b"],
+  permissions: [PermissionFlagsBits.BanMembers],
 
-  async execute(interaction: ChatInputCommandInteraction) {
-    if (!interaction.guild) {
-      await interaction.reply({ content: "This command can only be used in a server.", ephemeral: true });
+  async execute(message: Message, args: string[]) {
+    if (!message.guild) {
+      await message.reply("❌ This command can only be used in a server.");
       return;
     }
 
-    const target = interaction.options.getMember("user") as GuildMember | null;
-    const reason = interaction.options.getString("reason") ?? "No reason provided";
-    const deleteDays = interaction.options.getInteger("delete_days") ?? 0;
+    // Get target from mention or ID
+    const targetId = args[0]?.replace(/[<@!>]/g, "");
+    if (!targetId) {
+      await message.reply("❌ Please mention a user to ban. Usage: `!ban @user [reason]`");
+      return;
+    }
 
+    const target = await message.guild.members.fetch(targetId).catch(() => null);
     if (!target) {
-      await interaction.reply({ content: "Could not find that user.", ephemeral: true });
+      await message.reply("❌ Could not find that user.");
       return;
     }
 
-    const check = canModerate(interaction, target);
+    // Parse delete days from --delete flag
+    let deleteDays = 0;
+    const deleteIndex = args.indexOf("--delete");
+    if (deleteIndex !== -1 && args[deleteIndex + 1]) {
+      deleteDays = Math.min(7, Math.max(0, parseInt(args[deleteIndex + 1]!) || 0));
+      args.splice(deleteIndex, 2);
+    }
+
+    // Get reason (everything after the mention)
+    const reason = args.slice(1).join(" ") || "No reason provided";
+
+    const check = canModerate(message, target);
     if (!check.success) {
-      await interaction.reply({ content: check.reason!, ephemeral: true });
+      await message.reply(`❌ ${check.reason}`);
       return;
     }
 
     if (!target.bannable) {
-      await interaction.reply({ content: "I cannot ban this user.", ephemeral: true });
+      await message.reply("❌ I cannot ban this user.");
       return;
     }
 
     try {
       await target.ban({
-        reason: `${reason} (by ${interaction.user.tag})`,
+        reason: `${reason} (by ${message.author.tag})`,
         deleteMessageSeconds: deleteDays * 24 * 60 * 60,
       });
-      await interaction.reply({
-        content: `🔨 **${target.user.tag}** has been banned.\nReason: ${reason}`,
-      });
+
+      // Log to Convex
+      let caseNumber: number | null = null;
+      if (message.client.convex) {
+        try {
+          const result = await message.client.convex.mutation(api.modlogs.log, {
+            guildId: message.guild.id,
+            targetId: target.id,
+            targetUsername: target.user.tag,
+            moderatorId: message.author.id,
+            moderatorUsername: message.author.tag,
+            action: "ban",
+            reason: reason,
+          });
+          caseNumber = result.caseNumber;
+        } catch (err) {
+          console.error("Failed to log ban to Convex:", err);
+        }
+      }
+
+      const caseText = caseNumber ? ` | Case #${caseNumber}` : "";
+      await message.reply(`🔨 **${target.user.tag}** has been banned.${caseText}\nReason: ${reason}`);
     } catch {
-      await interaction.reply({ content: "Failed to ban the user.", ephemeral: true });
+      await message.reply("❌ Failed to ban the user.");
     }
   },
 };

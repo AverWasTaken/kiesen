@@ -1,6 +1,6 @@
 import {
   PermissionFlagsBits,
-  ChatInputCommandInteraction,
+  Message,
   GuildMember,
 } from "discord.js";
 
@@ -22,18 +22,18 @@ export function isAdmin(member: GuildMember): boolean {
  * Check if the bot can moderate a target member
  */
 export function canModerate(
-  interaction: ChatInputCommandInteraction,
+  message: Message,
   target: GuildMember
 ): { success: boolean; reason?: string } {
-  const bot = interaction.guild?.members.me;
-  const executor = interaction.member as GuildMember;
+  const bot = message.guild?.members.me;
+  const executor = message.member as GuildMember;
 
-  if (!bot || !interaction.guild) {
+  if (!bot || !message.guild) {
     return { success: false, reason: "Could not verify permissions" };
   }
 
   // Can't moderate the server owner
-  if (target.id === interaction.guild.ownerId) {
+  if (target.id === message.guild.ownerId) {
     return { success: false, reason: "Cannot moderate the server owner" };
   }
 
